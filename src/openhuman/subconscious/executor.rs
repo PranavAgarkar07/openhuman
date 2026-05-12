@@ -11,6 +11,7 @@ use super::types::{ExecutionResult, SubconsciousTask};
 use tracing::{debug, info, warn};
 
 /// Outcome of executing a task — either completed or needs user approval.
+#[derive(Debug)]
 pub enum ExecutionOutcome {
     /// Task completed (either read-only analysis or approved write).
     Completed(ExecutionResult),
@@ -94,22 +95,31 @@ pub async fn execute_task(
                 "[subconscious:executor] text task: {} — local AI disabled, using cloud fallback",
                 task.title
             );
-            let output =
-                execute_with_agent_analysis(&mut config, task, situation_report, identity_context).await?;
+            let output = execute_with_agent_analysis(
+                &mut config,
+                task,
+                situation_report,
+                identity_context,
+            )
+            .await
+            .map_err(|e| format!("cloud fallback agent execution: {e}"))?;
             let duration_ms = started.elapsed().as_millis() as u64;
+            debug!(
+                "[subconscious:executor] text task cloud fallback complete: {} — duration_ms={}",
+                task.title, duration_ms
+            );
 
-            if let Some(recommendation) = extract_recommended_action(&output) {
-                Ok(ExecutionOutcome::UnapprovedWrite {
-                    recommendation,
-                    duration_ms,
-                })
-            } else {
-                Ok(ExecutionOutcome::Completed(ExecutionResult {
-                    output,
-                    used_tools: false,
-                    duration_ms,
-                }))
-            }
+            // Suppress UnapprovedWrite: passive tasks that didn't trigger
+            // needs_agent should never escalate even if the cloud model's
+            // output contains RECOMMENDED ACTION. The write-intent gate is
+            // needs_tools for active tasks and needs_agent for read-only
+            // escalations; the cloud fallback is a passthrough for simple
+            // text tasks and must not silently change the contract.
+            Ok(ExecutionOutcome::Completed(ExecutionResult {
+                output,
+                used_tools: false,
+                duration_ms,
+            }))
         }
     };
 
@@ -122,6 +132,13 @@ pub async fn execute_task(
 
 /// Execute an approved write action — called after user approves an escalation
 /// that originated from `UnapprovedWrite`.
+///
+/// Independent `Config::load_or_init()`: the task was originally routed under
+/// config_A in `execute_task`; now executes under config_B after user approval.
+/// If `use_local_for_subconscious()` toggled between the two calls, the approval
+/// was made under different assumptions. Risk is negligible in practice (config
+/// changes require a restart to take effect on most fields), but callers should
+/// be aware of this TOCTOU window.
 pub async fn execute_approved_write(
     task: &SubconsciousTask,
     situation_report: &str,
@@ -400,8 +417,8 @@ encrypt = false
         assert!(result.is_err(), "expected error (cloud path will fail in test)");
         let err = result.unwrap_err();
         assert!(
-            err.contains("agent execution") || err.contains("config load"),
-            "expected cloud path error, got: {err}"
+            err.contains("cloud fallback"),
+            "expected cloud fallback error, got: {err}"
         );
     }
 
@@ -420,8 +437,8 @@ encrypt = false
         assert!(result.is_err(), "expected error (local path will fail in test)");
         let err = result.unwrap_err();
         assert!(
-            err.contains("local model") || err.contains("config load"),
-            "expected local path error, got: {err}"
+            err.contains("local model"),
+            "expected local model error, got: {err}"
         );
     }
 
