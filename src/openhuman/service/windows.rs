@@ -3,6 +3,7 @@
 use crate::openhuman::config::Config;
 use anyhow::Result;
 use std::fs;
+// File is `#[cfg(windows)]`-gated at the module level — no per-item guard needed.
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;

@@ -33,7 +33,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 #[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt as _;
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 
 use axum::http::{header, Method, StatusCode};
 use axum::middleware::Next;

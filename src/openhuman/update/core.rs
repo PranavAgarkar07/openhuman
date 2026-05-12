@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::PermissionsExt as _;
 
 use crate::openhuman::config::UpdateRestartStrategy;
 use crate::openhuman::update::types::{GitHubAsset, GitHubRelease, UpdateApplyResult, UpdateInfo};
