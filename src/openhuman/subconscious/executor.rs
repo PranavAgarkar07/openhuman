@@ -31,6 +31,9 @@ pub async fn execute_task(
 ) -> Result<ExecutionOutcome, String> {
     let started = std::time::Instant::now();
     let task_has_write_intent = needs_tools(&task.title);
+    let mut config = crate::openhuman::config::Config::load_or_init()
+        .await
+        .map_err(|e| format!("config load: {e}"))?;
 
     let result = if task_has_write_intent {
         // Task explicitly asks for a write action — run with full permissions.
@@ -38,7 +41,7 @@ pub async fn execute_task(
             "[subconscious:executor] write task: {} — agentic loop, full permissions",
             task.title
         );
-        execute_with_agent_full(task, situation_report, identity_context)
+        execute_with_agent_full(&mut config, task, situation_report, identity_context)
             .await
             .map(|output| {
                 ExecutionOutcome::Completed(ExecutionResult {
@@ -53,7 +56,7 @@ pub async fn execute_task(
             "[subconscious:executor] read-only task escalated: {} — agentic loop, analysis only",
             task.title
         );
-        let output = execute_with_agent_analysis(task, situation_report, identity_context).await?;
+        let output = execute_with_agent_analysis(&mut config, task, situation_report, identity_context).await?;
         let duration_ms = started.elapsed().as_millis() as u64;
 
         if let Some(recommendation) = extract_recommended_action(&output) {
@@ -70,12 +73,8 @@ pub async fn execute_task(
             }))
         }
     } else {
-        // Simple text-only task. Use local model if available, otherwise
-        // fall back to the cloud agentic analysis path.
-        let config = crate::openhuman::config::Config::load_or_init()
-            .await
-            .map_err(|e| format!("config load: {e}"))?;
-
+        // Simple text-only task. Use local model if configured for subconscious
+        // tasks, otherwise fall back to the cloud agentic analysis path.
         if config.local_ai.use_local_for_subconscious() {
             debug!(
                 "[subconscious:executor] text task: {} — using local model",
@@ -96,7 +95,7 @@ pub async fn execute_task(
                 task.title
             );
             let output =
-                execute_with_agent_analysis(task, situation_report, identity_context).await?;
+                execute_with_agent_analysis(&mut config, task, situation_report, identity_context).await?;
             let duration_ms = started.elapsed().as_millis() as u64;
 
             if let Some(recommendation) = extract_recommended_action(&output) {
@@ -129,7 +128,10 @@ pub async fn execute_approved_write(
     identity_context: &str,
 ) -> Result<ExecutionResult, String> {
     let started = std::time::Instant::now();
-    let output = execute_with_agent_full(task, situation_report, identity_context).await?;
+    let mut config = crate::openhuman::config::Config::load_or_init()
+        .await
+        .map_err(|e| format!("config load: {e}"))?;
+    let output = execute_with_agent_full(&mut config, task, situation_report, identity_context).await?;
     Ok(ExecutionResult {
         output,
         used_tools: true,
@@ -172,34 +174,28 @@ async fn execute_with_local_model(
 /// Retries up to 3 times with exponential backoff (2s, 4s, 8s) on 429 rate-limit
 /// errors from the agentic-v1 cloud model.
 async fn execute_with_agent_full(
+    config: &mut crate::openhuman::config::Config,
     task: &SubconsciousTask,
     situation_report: &str,
     identity_context: &str,
 ) -> Result<String, String> {
-    let mut config = crate::openhuman::config::Config::load_or_init()
-        .await
-        .map_err(|e| format!("config load: {e}"))?;
-
     let prompt_text = prompt::build_tool_execution_prompt(task, situation_report, identity_context);
 
-    agent_chat_with_retry(&mut config, &prompt_text).await
+    agent_chat_with_retry(config, &prompt_text).await
 }
 
 /// Execute with agentic-v1 in analysis-only mode (read-only tasks).
 ///
 /// The prompt instructs the model to analyze but not execute write actions.
 async fn execute_with_agent_analysis(
+    config: &mut crate::openhuman::config::Config,
     task: &SubconsciousTask,
     situation_report: &str,
     identity_context: &str,
 ) -> Result<String, String> {
-    let mut config = crate::openhuman::config::Config::load_or_init()
-        .await
-        .map_err(|e| format!("config load: {e}"))?;
-
     let prompt_text = prompt::build_analysis_only_prompt(task, situation_report, identity_context);
 
-    agent_chat_with_retry(&mut config, &prompt_text).await
+    agent_chat_with_retry(config, &prompt_text).await
 }
 
 /// Call agent_chat with rate-limit retry (429 only, up to 3 attempts).
@@ -317,6 +313,117 @@ pub fn needs_tools(title: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+    use tempfile::tempdir;
+
+    /// Guard that sets an env var for the duration of the test and restores it on drop.
+    struct EnvVarGuard {
+        key: String,
+        old: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set_to_path(key: &str, value: &Path) -> Self {
+            let old = std::env::var(key).ok();
+            std::env::set_var(key, value.to_str().expect("path is valid utf-8"));
+            Self {
+                key: key.to_string(),
+                old,
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.old {
+                Some(value) => std::env::set_var(&self.key, value),
+                None => std::env::remove_var(&self.key),
+            }
+        }
+    }
+
+    fn write_subconscious_test_config(workspace_root: &Path, local_ai_enabled: bool) {
+        let cfg = format!(
+            r#"default_temperature = 0.7
+
+[local_ai]
+runtime_enabled = {local_ai_enabled}
+provider = "ollama"
+
+[local_ai.usage]
+subconscious = {local_ai_enabled}
+
+[memory]
+backend = "sqlite"
+auto_save = true
+embedding_provider = "none"
+embedding_model = "none"
+embedding_dimensions = 0
+
+[secrets]
+encrypt = false
+"#
+        );
+        std::fs::create_dir_all(workspace_root).expect("mkdir test workspace root");
+        let config_path = workspace_root.join("config.toml");
+        std::fs::write(&config_path, &cfg).expect("write test config");
+        let _: crate::openhuman::config::Config =
+            toml::from_str(&cfg).expect("test config should deserialize");
+    }
+
+    fn make_text_task(title: &str) -> SubconsciousTask {
+        SubconsciousTask {
+            id: "test-id".into(),
+            title: title.into(),
+            source: super::super::types::TaskSource::User,
+            recurrence: super::super::types::TaskRecurrence::Once,
+            enabled: true,
+            last_run_at: None,
+            next_run_at: None,
+            completed: false,
+            created_at: 1700000000.0,
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_task_routes_to_cloud_when_local_disabled() {
+        let _env_lock = crate::openhuman::config::TEST_ENV_LOCK
+            .lock()
+            .expect("test env lock");
+        let tmp = tempdir().expect("tempdir");
+        let _workspace = EnvVarGuard::set_to_path("OPENHUMAN_WORKSPACE", tmp.path());
+        write_subconscious_test_config(tmp.path(), false);
+
+        let task = make_text_task("Summarize unread emails");
+        let result = execute_task(&task, "", "").await;
+
+        assert!(result.is_err(), "expected error (cloud path will fail in test)");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("agent execution") || err.contains("config load"),
+            "expected cloud path error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_task_routes_to_local_when_local_enabled() {
+        let _env_lock = crate::openhuman::config::TEST_ENV_LOCK
+            .lock()
+            .expect("test env lock");
+        let tmp = tempdir().expect("tempdir");
+        let _workspace = EnvVarGuard::set_to_path("OPENHUMAN_WORKSPACE", tmp.path());
+        write_subconscious_test_config(tmp.path(), true);
+
+        let task = make_text_task("Summarize unread emails");
+        let result = execute_task(&task, "", "").await;
+
+        assert!(result.is_err(), "expected error (local path will fail in test)");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("local model") || err.contains("config load"),
+            "expected local path error, got: {err}"
+        );
+    }
 
     #[test]
     fn needs_tools_detects_action_verbs() {
