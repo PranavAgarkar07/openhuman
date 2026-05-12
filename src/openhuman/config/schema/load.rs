@@ -549,8 +549,13 @@ impl Config {
                 .await
                 .context("Failed to read config file")?;
             let parse_result: Result<Config, _> = toml::from_str(&contents);
-            let mut config: Config = match parse_result {
-                Ok(c) => c,
+            let mut config: Config;
+            let recovered_from_backup: bool;
+            match parse_result {
+                Ok(c) => {
+                    config = c;
+                    recovered_from_backup = false;
+                }
                 Err(parse_err) => {
                     let backup_path = config_path.with_extension("toml.bak");
                     if backup_path.exists() {
@@ -568,7 +573,8 @@ impl Config {
                                         backup = %backup_path.display(),
                                         "[config] Recovered config from backup"
                                     );
-                                    backup_config
+                                    config = backup_config;
+                                    recovered_from_backup = true;
                                 }
                                 Err(backup_err) => {
                                     tracing::warn!(
@@ -577,7 +583,8 @@ impl Config {
                                         error = %backup_err,
                                         "[config] Backup is also corrupted; resetting to defaults"
                                     );
-                                    Config::default()
+                                    config = Config::default();
+                                    recovered_from_backup = true;
                                 }
                             },
                             Err(read_err) => {
@@ -587,7 +594,8 @@ impl Config {
                                     error = %read_err,
                                     "[config] Failed to read backup; resetting to defaults"
                                 );
-                                Config::default()
+                                config = Config::default();
+                                recovered_from_backup = true;
                             }
                         }
                     } else {
@@ -596,14 +604,25 @@ impl Config {
                             error = %parse_err,
                             "[config] Config file is corrupted (no backup found); resetting to defaults"
                         );
-                        Config::default()
+                        config = Config::default();
+                        recovered_from_backup = true;
                     }
                 }
-            };
+            }
             config.config_path = config_path.clone();
             config.workspace_dir = workspace_dir;
             migrate_legacy_autocomplete_disabled_apps(&mut config);
             config.apply_env_overrides();
+
+            if recovered_from_backup {
+                if let Err(e) = config.save().await {
+                    tracing::warn!(
+                        path = %config.config_path.display(),
+                        error = %e,
+                        "[config] Failed to persist recovered config to disk"
+                    );
+                }
+            }
 
             tracing::debug!(
                 path = %config.config_path.display(),

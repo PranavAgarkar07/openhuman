@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 /// Heartbeat configuration — periodic background loop that evaluates
 /// HEARTBEAT.md tasks against workspace state using local model inference.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct HeartbeatConfig {
     /// Enable the heartbeat loop.
     pub enabled: bool,
@@ -73,6 +74,7 @@ impl Default for HeartbeatConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct CronConfig {
     #[serde(default = "default_cron_enabled")]
     pub enabled: bool,

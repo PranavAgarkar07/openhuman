@@ -5,18 +5,21 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
 pub struct StorageConfig {
     #[serde(default)]
     pub provider: StorageProviderSection,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
 pub struct StorageProviderSection {
     #[serde(default)]
     pub config: StorageProviderConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct StorageProviderConfig {
     #[serde(default)]
     pub provider: String,
@@ -32,6 +35,7 @@ impl Default for StorageProviderConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[allow(clippy::struct_excessive_bools)]
+#[serde(default)]
 pub struct MemoryConfig {
     pub backend: String,
     pub auto_save: bool,
@@ -165,6 +169,7 @@ fn default_cloud_llm_model() -> Option<String> {
 /// - `OPENHUMAN_MEMORY_TREE_LLM_BACKEND` (cloud|local)
 /// - `OPENHUMAN_MEMORY_TREE_CLOUD_LLM_MODEL`
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct MemoryTreeConfig {
     /// Ollama endpoint for the embedder (e.g. `http://localhost:11434`).
     /// `None` disables the Ollama path — see `embedding_strict` for the
