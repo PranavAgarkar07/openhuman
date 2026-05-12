@@ -10,6 +10,33 @@ use super::prompt;
 use super::types::{ExecutionResult, SubconsciousTask};
 use tracing::{debug, info, warn};
 
+#[cfg(test)]
+mod test_mocks {
+    use std::sync::atomic::{AtomicU8, Ordering};
+
+    const MODE_REAL: u8 = 0;
+    const MODE_LOCAL_FAIL: u8 = 1;
+    const MODE_AGENT_FAIL: u8 = 2;
+
+    static MODE: AtomicU8 = AtomicU8::new(MODE_REAL);
+
+    pub fn mock_local() {
+        MODE.store(MODE_LOCAL_FAIL, Ordering::Release);
+    }
+    pub fn mock_agent() {
+        MODE.store(MODE_AGENT_FAIL, Ordering::Release);
+    }
+    pub fn reset() {
+        MODE.store(MODE_REAL, Ordering::Release);
+    }
+    pub fn is_local_mocked() -> bool {
+        MODE.load(Ordering::Acquire) == MODE_LOCAL_FAIL
+    }
+    pub fn is_agent_mocked() -> bool {
+        MODE.load(Ordering::Acquire) == MODE_AGENT_FAIL
+    }
+}
+
 /// Outcome of executing a task — either completed or needs user approval.
 #[derive(Debug)]
 pub enum ExecutionOutcome {
@@ -39,8 +66,8 @@ pub async fn execute_task(
     let result = if task_has_write_intent {
         // Task explicitly asks for a write action — run with full permissions.
         info!(
-            "[subconscious:executor] write task: {} — agentic loop, full permissions",
-            task.title
+            "[subconscious:executor] write task: id={} — agentic loop, full permissions",
+            task.id
         );
         execute_with_agent_full(&mut config, task, situation_report, identity_context)
             .await
@@ -54,8 +81,8 @@ pub async fn execute_task(
     } else if needs_agent(&task.title) {
         // Read-only task but needs deeper reasoning — run analysis-only.
         info!(
-            "[subconscious:executor] read-only task escalated: {} — agentic loop, analysis only",
-            task.title
+            "[subconscious:executor] read-only task escalated: id={} — agentic loop, analysis only",
+            task.id
         );
         let output = execute_with_agent_analysis(&mut config, task, situation_report, identity_context).await?;
         let duration_ms = started.elapsed().as_millis() as u64;
@@ -78,8 +105,8 @@ pub async fn execute_task(
         // tasks, otherwise fall back to the cloud agentic analysis path.
         if config.local_ai.use_local_for_subconscious() {
             debug!(
-                "[subconscious:executor] text task: {} — using local model",
-                task.title
+                "[subconscious:executor] text task: id={} — using local model",
+                task.id
             );
             execute_with_local_model(&config, task, situation_report, identity_context)
                 .await
@@ -92,8 +119,8 @@ pub async fn execute_task(
                 })
         } else {
             info!(
-                "[subconscious:executor] text task: {} — local AI disabled, using cloud fallback",
-                task.title
+                "[subconscious:executor] text task: id={} — local AI disabled, using cloud fallback",
+                task.id
             );
             let output = execute_with_agent_analysis(
                 &mut config,
@@ -105,8 +132,8 @@ pub async fn execute_task(
             .map_err(|e| format!("cloud fallback agent execution: {e}"))?;
             let duration_ms = started.elapsed().as_millis() as u64;
             debug!(
-                "[subconscious:executor] text task cloud fallback complete: {} — duration_ms={}",
-                task.title, duration_ms
+                "[subconscious:executor] text task cloud fallback complete: id={} — duration_ms={}",
+                task.id, duration_ms
             );
 
             // Suppress UnapprovedWrite: passive tasks that didn't trigger
@@ -124,7 +151,7 @@ pub async fn execute_task(
     };
 
     if let Err(ref e) = result {
-        warn!("[subconscious:executor] task '{}' failed: {e}", task.title);
+        warn!("[subconscious:executor] task id={} failed: {e}", task.id);
     }
 
     result
@@ -166,6 +193,10 @@ async fn execute_with_local_model(
     situation_report: &str,
     identity_context: &str,
 ) -> Result<String, String> {
+    #[cfg(test)]
+    if test_mocks::is_local_mocked() {
+        return Err("local model: mocked failure (test)".into());
+    }
     let prompt_text = prompt::build_text_execution_prompt(task, situation_report, identity_context);
 
     let messages = vec![
@@ -210,6 +241,10 @@ async fn execute_with_agent_analysis(
     situation_report: &str,
     identity_context: &str,
 ) -> Result<String, String> {
+    #[cfg(test)]
+    if test_mocks::is_agent_mocked() {
+        return Err("cloud fallback: mocked failure (test)".into());
+    }
     let prompt_text = prompt::build_analysis_only_prompt(task, situation_report, identity_context);
 
     agent_chat_with_retry(config, &prompt_text).await
@@ -407,14 +442,16 @@ encrypt = false
         let _env_lock = crate::openhuman::config::TEST_ENV_LOCK
             .lock()
             .expect("test env lock");
+        test_mocks::reset();
         let tmp = tempdir().expect("tempdir");
         let _workspace = EnvVarGuard::set_to_path("OPENHUMAN_WORKSPACE", tmp.path());
         write_subconscious_test_config(tmp.path(), false);
 
+        test_mocks::mock_agent();
         let task = make_text_task("Summarize unread emails");
         let result = execute_task(&task, "", "").await;
 
-        assert!(result.is_err(), "expected error (cloud path will fail in test)");
+        assert!(result.is_err(), "expected error (cloud path)");
         let err = result.unwrap_err();
         assert!(
             err.contains("cloud fallback"),
@@ -427,14 +464,16 @@ encrypt = false
         let _env_lock = crate::openhuman::config::TEST_ENV_LOCK
             .lock()
             .expect("test env lock");
+        test_mocks::reset();
         let tmp = tempdir().expect("tempdir");
         let _workspace = EnvVarGuard::set_to_path("OPENHUMAN_WORKSPACE", tmp.path());
         write_subconscious_test_config(tmp.path(), true);
 
+        test_mocks::mock_local();
         let task = make_text_task("Summarize unread emails");
         let result = execute_task(&task, "", "").await;
 
-        assert!(result.is_err(), "expected error (local path will fail in test)");
+        assert!(result.is_err(), "expected error (local path)");
         let err = result.unwrap_err();
         assert!(
             err.contains("local model"),
