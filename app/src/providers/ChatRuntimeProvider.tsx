@@ -840,12 +840,13 @@ const ChatRuntimeProvider = ({ children }: { children: React.ReactNode }) => {
           const currentState = store.getState();
           const threadMessages = currentState.thread.messagesByThreadId[event.thread_id] ?? [];
           const lastMsg = threadMessages[threadMessages.length - 1];
+          const errorContent = event.message || USER_FACING_AGENT_ERROR_MESSAGE;
           if (
-            !(lastMsg?.sender === 'agent' && lastMsg?.content === USER_FACING_AGENT_ERROR_MESSAGE)
+            !(lastMsg?.sender === 'agent' && lastMsg?.content === errorContent)
           ) {
             void dispatch(
               addInferenceResponse({
-                content: USER_FACING_AGENT_ERROR_MESSAGE,
+                content: errorContent,
                 threadId: event.thread_id,
               })
             );
