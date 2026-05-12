@@ -70,20 +70,48 @@ pub async fn execute_task(
             }))
         }
     } else {
-        // Simple text-only task — local model handles it.
-        debug!(
-            "[subconscious:executor] text task: {} — using local model",
-            task.title
-        );
-        execute_with_local_model(task, situation_report, identity_context)
+        // Simple text-only task. Use local model if available, otherwise
+        // fall back to the cloud agentic analysis path.
+        let config = crate::openhuman::config::Config::load_or_init()
             .await
-            .map(|output| {
-                ExecutionOutcome::Completed(ExecutionResult {
+            .map_err(|e| format!("config load: {e}"))?;
+
+        if config.local_ai.use_local_for_subconscious() {
+            debug!(
+                "[subconscious:executor] text task: {} — using local model",
+                task.title
+            );
+            execute_with_local_model(task, situation_report, identity_context)
+                .await
+                .map(|output| {
+                    ExecutionOutcome::Completed(ExecutionResult {
+                        output,
+                        used_tools: false,
+                        duration_ms: started.elapsed().as_millis() as u64,
+                    })
+                })
+        } else {
+            info!(
+                "[subconscious:executor] text task: {} — local AI disabled, using cloud fallback",
+                task.title
+            );
+            let output =
+                execute_with_agent_analysis(task, situation_report, identity_context).await?;
+            let duration_ms = started.elapsed().as_millis() as u64;
+
+            if let Some(recommendation) = extract_recommended_action(&output) {
+                Ok(ExecutionOutcome::UnapprovedWrite {
+                    recommendation,
+                    duration_ms,
+                })
+            } else {
+                Ok(ExecutionOutcome::Completed(ExecutionResult {
                     output,
                     used_tools: false,
-                    duration_ms: started.elapsed().as_millis() as u64,
-                })
-            })
+                    duration_ms,
+                }))
+            }
+        }
     };
 
     if let Err(ref e) = result {
