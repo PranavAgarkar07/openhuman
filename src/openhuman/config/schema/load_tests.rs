@@ -976,3 +976,159 @@ fn apply_env_overrides_commits_side_effects_to_runtime_proxy() {
     // other tests that inspect runtime_proxy_config().
     set_runtime_proxy_config(previous_runtime);
 }
+
+// ── config recovery (load_or_init with corrupted config.toml) ───
+
+/// Helper: write a file under a temp dir path.
+async fn write_file(path: &std::path::Path, contents: &str) {
+    tokio::fs::write(path, contents)
+        .await
+        .unwrap_or_else(|e| panic!("failed to write {}: {e}", path.display()));
+}
+
+const CORRUPTED_TOML: &str = "{{{ bad table header\n";
+
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[tokio::test]
+async fn load_or_init_recovers_from_backup_when_config_corrupted() {
+    let _g = env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+
+    let config_path = root.join("config.toml");
+    let backup_path = root.join("config.toml.bak");
+
+    write_file(&config_path, CORRUPTED_TOML).await;
+    write_file(
+        &backup_path,
+        r#"default_model = "gpt-recovery-test"
+default_temperature = 0.7
+"#,
+    )
+    .await;
+
+    unsafe {
+        std::env::set_var("OPENHUMAN_WORKSPACE", root.to_str().unwrap());
+    }
+
+    let config = Config::load_or_init().await.unwrap();
+
+    assert_eq!(
+        config.default_model.as_deref(),
+        Some("gpt-recovery-test"),
+        "must load values from backup"
+    );
+
+    // The recovered config must have been persisted to disk.
+    let persisted = tokio::fs::read_to_string(&config_path).await.unwrap();
+    assert!(
+        persisted.contains("default_model"),
+        "recovered config must be written back to config.toml: {persisted}"
+    );
+
+    // The .bak must still be intact (save() must NOT have overwritten it
+    // with the corrupted primary).
+    let bak_contents = tokio::fs::read_to_string(&backup_path).await.unwrap();
+    assert!(
+        bak_contents.contains("gpt-recovery-test"),
+        "backup must not be overwritten by corrupted config during save: {bak_contents}"
+    );
+
+    unsafe {
+        std::env::remove_var("OPENHUMAN_WORKSPACE");
+    }
+}
+
+#[tokio::test]
+async fn load_or_init_falls_back_to_defaults_when_backup_also_corrupted() {
+    let _g = env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+
+    let config_path = root.join("config.toml");
+    let backup_path = root.join("config.toml.bak");
+
+    write_file(&config_path, CORRUPTED_TOML).await;
+    write_file(&backup_path, CORRUPTED_TOML).await;
+
+    unsafe {
+        std::env::set_var("OPENHUMAN_WORKSPACE", root.to_str().unwrap());
+    }
+
+    let config = Config::load_or_init().await.unwrap();
+
+    // Config::default() sets default_model = Some("reasoning-v1").
+    assert_eq!(
+        config.default_model.as_deref(),
+        Some(crate::openhuman::config::schema::DEFAULT_MODEL),
+        "must fall back to defaults when backup is also corrupted"
+    );
+
+    assert!(tokio::fs::try_exists(&config_path).await.unwrap());
+
+    unsafe {
+        std::env::remove_var("OPENHUMAN_WORKSPACE");
+    }
+}
+
+#[tokio::test]
+async fn load_or_init_falls_back_to_defaults_when_no_backup() {
+    let _g = env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+
+    let config_path = root.join("config.toml");
+    write_file(&config_path, CORRUPTED_TOML).await;
+
+    unsafe {
+        std::env::set_var("OPENHUMAN_WORKSPACE", root.to_str().unwrap());
+    }
+
+    let config = Config::load_or_init().await.unwrap();
+
+    assert_eq!(
+        config.default_model.as_deref(),
+        Some(crate::openhuman::config::schema::DEFAULT_MODEL),
+        "must fall back to defaults when no backup exists"
+    );
+
+    assert!(tokio::fs::try_exists(&config_path).await.unwrap());
+
+    unsafe {
+        std::env::remove_var("OPENHUMAN_WORKSPACE");
+    }
+}
+
+#[tokio::test]
+async fn load_or_init_does_not_trigger_recovery_on_valid_config() {
+    let _g = env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+
+    write_file(
+        &root.join("config.toml"),
+        r#"default_model = "gpt-valid"
+default_temperature = 0.7
+"#,
+    )
+    .await;
+
+    unsafe {
+        std::env::set_var("OPENHUMAN_WORKSPACE", root.to_str().unwrap());
+    }
+
+    let config = Config::load_or_init().await.unwrap();
+
+    assert_eq!(
+        config.default_model.as_deref(),
+        Some("gpt-valid"),
+        "valid config must load normally without recovery"
+    );
+
+    unsafe {
+        std::env::remove_var("OPENHUMAN_WORKSPACE");
+    }
+}

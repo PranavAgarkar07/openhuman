@@ -615,6 +615,12 @@ impl Config {
             config.apply_env_overrides();
 
             if recovered_from_backup {
+                // Rename the corrupted primary so that save() does not
+                // see an existing file at config_path and overwrite the
+                // (good) .bak with corrupted content.
+                let corrupted_path = config_path.with_extension("toml.corrupted");
+                let _ = fs::rename(&config_path, &corrupted_path).await;
+
                 if let Err(e) = config.save().await {
                     tracing::warn!(
                         path = %config.config_path.display(),
