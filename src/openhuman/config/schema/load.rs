@@ -553,21 +553,51 @@ impl Config {
                 Ok(c) => c,
                 Err(parse_err) => {
                     let backup_path = config_path.with_extension("toml.bak");
-                    tracing::warn!(
-                        path = %config_path.display(),
-                        backup = %backup_path.display(),
-                        error = %parse_err,
-                        "[config] Config file is corrupted — backing up and resetting to defaults"
-                    );
-                    if let Err(copy_err) = fs::copy(&config_path, &backup_path).await {
+                    if backup_path.exists() {
                         tracing::warn!(
                             path = %config_path.display(),
                             backup = %backup_path.display(),
-                            error = %copy_err,
-                            "[config] Failed to back up corrupted config; continuing with defaults"
+                            error = %parse_err,
+                            "[config] Config file is corrupted — attempting recovery from backup"
                         );
+                        match fs::read_to_string(&backup_path).await {
+                            Ok(backup_contents) => match toml::from_str(&backup_contents) {
+                                Ok(backup_config) => {
+                                    tracing::info!(
+                                        path = %config_path.display(),
+                                        backup = %backup_path.display(),
+                                        "[config] Recovered config from backup"
+                                    );
+                                    backup_config
+                                }
+                                Err(backup_err) => {
+                                    tracing::warn!(
+                                        path = %config_path.display(),
+                                        backup = %backup_path.display(),
+                                        error = %backup_err,
+                                        "[config] Backup is also corrupted; resetting to defaults"
+                                    );
+                                    Config::default()
+                                }
+                            },
+                            Err(read_err) => {
+                                tracing::warn!(
+                                    path = %config_path.display(),
+                                    backup = %backup_path.display(),
+                                    error = %read_err,
+                                    "[config] Failed to read backup; resetting to defaults"
+                                );
+                                Config::default()
+                            }
+                        }
+                    } else {
+                        tracing::warn!(
+                            path = %config_path.display(),
+                            error = %parse_err,
+                            "[config] Config file is corrupted (no backup found); resetting to defaults"
+                        );
+                        Config::default()
                     }
-                    Config::default()
                 }
             };
             config.config_path = config_path.clone();
@@ -1302,10 +1332,6 @@ impl Config {
         }
 
         sync_directory(parent_dir).await?;
-
-        if had_existing_config {
-            let _ = fs::remove_file(&backup_path).await;
-        }
 
         Ok(())
     }
