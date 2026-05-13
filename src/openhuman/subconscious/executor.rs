@@ -84,7 +84,9 @@ pub async fn execute_task(
             "[subconscious:executor] read-only task escalated: id={} — agentic loop, analysis only",
             task.id
         );
-        let output = execute_with_agent_analysis(&mut config, task, situation_report, identity_context).await?;
+        let output =
+            execute_with_agent_analysis(&mut config, task, situation_report, identity_context)
+                .await?;
         let duration_ms = started.elapsed().as_millis() as u64;
 
         if let Some(recommendation) = extract_recommended_action(&output) {
@@ -122,14 +124,10 @@ pub async fn execute_task(
                 "[subconscious:executor] text task: id={} — local AI disabled, using cloud fallback",
                 task.id
             );
-            let output = execute_with_agent_analysis(
-                &mut config,
-                task,
-                situation_report,
-                identity_context,
-            )
-            .await
-            .map_err(|e| format!("cloud fallback agent execution: {e}"))?;
+            let output =
+                execute_with_agent_analysis(&mut config, task, situation_report, identity_context)
+                    .await
+                    .map_err(|e| format!("cloud fallback agent execution: {e}"))?;
             let duration_ms = started.elapsed().as_millis() as u64;
             debug!(
                 "[subconscious:executor] text task cloud fallback complete: id={} — duration_ms={}",
@@ -175,7 +173,8 @@ pub async fn execute_approved_write(
     let mut config = crate::openhuman::config::Config::load_or_init()
         .await
         .map_err(|e| format!("config load: {e}"))?;
-    let output = execute_with_agent_full(&mut config, task, situation_report, identity_context).await?;
+    let output =
+        execute_with_agent_full(&mut config, task, situation_report, identity_context).await?;
     Ok(ExecutionResult {
         output,
         used_tools: true,
