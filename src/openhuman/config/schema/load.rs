@@ -448,6 +448,73 @@ pub fn pre_login_user_dir(default_openhuman_dir: &Path) -> PathBuf {
     user_openhuman_dir(default_openhuman_dir, PRE_LOGIN_USER_ID)
 }
 
+/// Try to parse config TOML. On failure, try `.bak`, then fall back to `Config::default()`.
+///
+/// Returns `(config, was_corrupted)` where `was_corrupted == true` means the
+/// primary failed to parse and the caller is responsible for archiving the
+/// corrupt primary and persisting the recovered/default config.
+///
+/// This is a standalone async function (not a method on Config) so it can be
+/// called from both `load_or_init` and `load_from_default_paths`.
+async fn parse_config_with_recovery(config_path: &Path, contents: &str) -> (Config, bool) {
+    let parse_err = match toml::from_str::<Config>(contents) {
+        Ok(config) => {
+            tracing::debug!(
+                path = %config_path.display(),
+                "[config] Config parsed successfully"
+            );
+            return (config, false);
+        }
+        Err(parse_err) => parse_err,
+    };
+
+    let backup_path = config_path.with_extension("toml.bak");
+    if tokio::fs::try_exists(&backup_path).await.unwrap_or(false) {
+        tracing::warn!(
+            path = %config_path.display(),
+            backup = %backup_path.display(),
+            error = %parse_err,
+            "[config] Config file is corrupted — attempting recovery from backup"
+        );
+        match fs::read_to_string(&backup_path).await {
+            Ok(bak_contents) => match toml::from_str::<Config>(&bak_contents) {
+                Ok(bak_config) => {
+                    tracing::info!(
+                        path = %config_path.display(),
+                        backup = %backup_path.display(),
+                        "[config] Recovered config from backup"
+                    );
+                    return (bak_config, true);
+                }
+                Err(bak_err) => {
+                    tracing::warn!(
+                        path = %config_path.display(),
+                        backup = %backup_path.display(),
+                        error = %bak_err,
+                        "[config] Backup is also corrupted; resetting to defaults"
+                    );
+                }
+            },
+            Err(read_err) => {
+                tracing::warn!(
+                    path = %config_path.display(),
+                    backup = %backup_path.display(),
+                    error = %read_err,
+                    "[config] Failed to read backup; resetting to defaults"
+                );
+            }
+        }
+    } else {
+        tracing::warn!(
+            path = %config_path.display(),
+            error = %parse_err,
+            "[config] Config file is corrupted (no backup found); resetting to defaults"
+        );
+    }
+
+    (Config::default(), true)
+}
+
 fn migrate_legacy_autocomplete_disabled_apps(config: &mut Config) {
     // Legacy defaults blocked both terminal and code, which prevented Codex/CLI usage.
     // Migrate only the exact legacy default so custom user preferences remain untouched.
@@ -548,67 +615,8 @@ impl Config {
             let contents = fs::read_to_string(&config_path)
                 .await
                 .context("Failed to read config file")?;
-            let parse_result: Result<Config, _> = toml::from_str(&contents);
-            let mut config: Config;
-            let config_was_corrupted: bool;
-            match parse_result {
-                Ok(c) => {
-                    config = c;
-                    config_was_corrupted = false;
-                }
-                Err(parse_err) => {
-                    let backup_path = config_path.with_extension("toml.bak");
-                    if tokio::fs::try_exists(&backup_path).await.unwrap_or(false) {
-                        tracing::warn!(
-                            path = %config_path.display(),
-                            backup = %backup_path.display(),
-                            error = %parse_err,
-                            "[config] Config file is corrupted — attempting recovery from backup"
-                        );
-                        match fs::read_to_string(&backup_path).await {
-                            Ok(backup_contents) => match toml::from_str(&backup_contents) {
-                                Ok(backup_config) => {
-                                    tracing::info!(
-                                        path = %config_path.display(),
-                                        backup = %backup_path.display(),
-                                        "[config] Recovered config from backup"
-                                    );
-                                    config = backup_config;
-                                    config_was_corrupted = true;
-                                }
-                                Err(backup_err) => {
-                                    tracing::warn!(
-                                        path = %config_path.display(),
-                                        backup = %backup_path.display(),
-                                        error = %backup_err,
-                                        "[config] Backup is also corrupted; resetting to defaults"
-                                    );
-                                    config = Config::default();
-                                    config_was_corrupted = true;
-                                }
-                            },
-                            Err(read_err) => {
-                                tracing::warn!(
-                                    path = %config_path.display(),
-                                    backup = %backup_path.display(),
-                                    error = %read_err,
-                                    "[config] Failed to read backup; resetting to defaults"
-                                );
-                                config = Config::default();
-                                config_was_corrupted = true;
-                            }
-                        }
-                    } else {
-                        tracing::warn!(
-                            path = %config_path.display(),
-                            error = %parse_err,
-                            "[config] Config file is corrupted (no backup found); resetting to defaults"
-                        );
-                        config = Config::default();
-                        config_was_corrupted = true;
-                    }
-                }
-            }
+            let (mut config, config_was_corrupted) =
+                parse_config_with_recovery(&config_path, &contents).await;
             config.config_path = config_path.clone();
             config.workspace_dir = workspace_dir;
             migrate_legacy_autocomplete_disabled_apps(&mut config);
@@ -714,8 +722,7 @@ impl Config {
         let raw = fs::read_to_string(&config_path)
             .await
             .context("reading config.toml from default paths")?;
-        let mut config: Config =
-            toml::from_str(&raw).context("parsing config.toml from default paths")?;
+        let (mut config, _was_corrupted) = parse_config_with_recovery(&config_path, &raw).await;
         config.config_path = config_path;
         config.workspace_dir = workspace_dir;
         config.apply_env_overrides();
@@ -1382,6 +1389,11 @@ impl Config {
         }
 
         sync_directory(parent_dir).await?;
+
+        // Note: we intentionally keep the .bak file after a successful save so
+        // that `parse_config_with_recovery` can use it if the primary is later
+        // corrupted. The .bak is updated on every successful save, so it always
+        // holds the last-known-good config.
 
         Ok(())
     }
