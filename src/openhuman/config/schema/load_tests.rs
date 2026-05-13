@@ -113,7 +113,7 @@ fn clear_env(keys: &[&str]) {
 
 #[test]
 fn apply_env_overrides_picks_up_model() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = env_lock();
     clear_env(&["OPENHUMAN_MODEL", "MODEL"]);
     unsafe {
         std::env::set_var("OPENHUMAN_MODEL", "gpt-5");
@@ -128,7 +128,7 @@ fn apply_env_overrides_picks_up_model() {
 
 #[test]
 fn apply_env_overrides_validates_temperature_range() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = env_lock();
     clear_env(&["OPENHUMAN_TEMPERATURE"]);
     let mut cfg = Config::default();
     cfg.default_temperature = 0.5;
@@ -158,7 +158,7 @@ fn apply_env_overrides_validates_temperature_range() {
 
 #[test]
 fn apply_env_overrides_reasoning_enabled_parses_truthy_falsy() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = env_lock();
     clear_env(&["OPENHUMAN_REASONING_ENABLED", "REASONING_ENABLED"]);
     let mut cfg = Config::default();
     cfg.runtime.reasoning_enabled = None;
@@ -188,7 +188,7 @@ fn apply_env_overrides_reasoning_enabled_parses_truthy_falsy() {
 
 #[test]
 fn apply_env_overrides_web_search_limits_only() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = env_lock();
     clear_env(&[
         "OPENHUMAN_WEB_SEARCH_MAX_RESULTS",
         "WEB_SEARCH_MAX_RESULTS",
@@ -211,7 +211,7 @@ fn apply_env_overrides_web_search_limits_only() {
 
 #[test]
 fn apply_env_overrides_web_search_max_results_and_timeout_clamped() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = env_lock();
     clear_env(&[
         "OPENHUMAN_WEB_SEARCH_MAX_RESULTS",
         "WEB_SEARCH_MAX_RESULTS",
@@ -250,7 +250,7 @@ fn apply_env_overrides_web_search_max_results_and_timeout_clamped() {
 
 #[test]
 fn apply_env_overrides_picks_up_sentry_dsn() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = env_lock();
     clear_env(&["OPENHUMAN_CORE_SENTRY_DSN", "OPENHUMAN_SENTRY_DSN"]);
     let mut cfg = Config::default();
     unsafe {
@@ -266,7 +266,7 @@ fn apply_env_overrides_picks_up_sentry_dsn() {
 
 #[test]
 fn apply_env_overrides_prefers_core_sentry_dsn_when_both_set() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = env_lock();
     clear_env(&["OPENHUMAN_CORE_SENTRY_DSN", "OPENHUMAN_SENTRY_DSN"]);
     let mut cfg = Config::default();
     unsafe {
@@ -284,7 +284,7 @@ fn apply_env_overrides_prefers_core_sentry_dsn_when_both_set() {
 
 #[test]
 fn apply_env_overrides_picks_up_core_sentry_dsn_alone() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = env_lock();
     clear_env(&["OPENHUMAN_CORE_SENTRY_DSN", "OPENHUMAN_SENTRY_DSN"]);
     let mut cfg = Config::default();
     unsafe {
@@ -933,7 +933,7 @@ fn apply_env_overrides_commits_side_effects_to_runtime_proxy() {
     use crate::openhuman::config::schema::proxy::{runtime_proxy_config, set_runtime_proxy_config};
 
     // Hold the env lock so no other test races on proxy-related env vars.
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = env_lock();
     clear_env(&[
         "OPENHUMAN_PROXY_ENABLED",
         "OPENHUMAN_HTTP_PROXY",
@@ -1073,6 +1073,19 @@ async fn load_or_init_falls_back_to_defaults_when_backup_also_corrupted() {
 
     assert!(tokio::fs::try_exists(&config_path).await.unwrap());
 
+    // The corrupted backup should not be deleted by the recovery flow.
+    assert!(
+        tokio::fs::try_exists(&backup_path).await.unwrap(),
+        ".bak must not be deleted during recovery"
+    );
+
+    // The corrupted primary must have been renamed to .corrupted.
+    let corrupted_path = root.join("config.toml.corrupted");
+    assert!(
+        tokio::fs::try_exists(&corrupted_path).await.unwrap(),
+        "corrupted primary must be renamed to config.toml.corrupted"
+    );
+
     unsafe {
         std::env::remove_var("OPENHUMAN_WORKSPACE");
     }
@@ -1100,6 +1113,13 @@ async fn load_or_init_falls_back_to_defaults_when_no_backup() {
     );
 
     assert!(tokio::fs::try_exists(&config_path).await.unwrap());
+
+    // The corrupted primary must have been renamed to .corrupted.
+    let corrupted_path = root.join("config.toml.corrupted");
+    assert!(
+        tokio::fs::try_exists(&corrupted_path).await.unwrap(),
+        "corrupted primary must be renamed to config.toml.corrupted"
+    );
 
     unsafe {
         std::env::remove_var("OPENHUMAN_WORKSPACE");

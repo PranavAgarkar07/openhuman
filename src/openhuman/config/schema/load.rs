@@ -550,15 +550,15 @@ impl Config {
                 .context("Failed to read config file")?;
             let parse_result: Result<Config, _> = toml::from_str(&contents);
             let mut config: Config;
-            let recovered_from_backup: bool;
+            let config_was_corrupted: bool;
             match parse_result {
                 Ok(c) => {
                     config = c;
-                    recovered_from_backup = false;
+                    config_was_corrupted = false;
                 }
                 Err(parse_err) => {
                     let backup_path = config_path.with_extension("toml.bak");
-                    if backup_path.exists() {
+                    if tokio::fs::try_exists(&backup_path).await.unwrap_or(false) {
                         tracing::warn!(
                             path = %config_path.display(),
                             backup = %backup_path.display(),
@@ -574,7 +574,7 @@ impl Config {
                                         "[config] Recovered config from backup"
                                     );
                                     config = backup_config;
-                                    recovered_from_backup = true;
+                                    config_was_corrupted = true;
                                 }
                                 Err(backup_err) => {
                                     tracing::warn!(
@@ -584,7 +584,7 @@ impl Config {
                                         "[config] Backup is also corrupted; resetting to defaults"
                                     );
                                     config = Config::default();
-                                    recovered_from_backup = true;
+                                    config_was_corrupted = true;
                                 }
                             },
                             Err(read_err) => {
@@ -595,7 +595,7 @@ impl Config {
                                     "[config] Failed to read backup; resetting to defaults"
                                 );
                                 config = Config::default();
-                                recovered_from_backup = true;
+                                config_was_corrupted = true;
                             }
                         }
                     } else {
@@ -605,7 +605,7 @@ impl Config {
                             "[config] Config file is corrupted (no backup found); resetting to defaults"
                         );
                         config = Config::default();
-                        recovered_from_backup = true;
+                        config_was_corrupted = true;
                     }
                 }
             }
@@ -614,19 +614,39 @@ impl Config {
             migrate_legacy_autocomplete_disabled_apps(&mut config);
             config.apply_env_overrides();
 
-            if recovered_from_backup {
-                // Rename the corrupted primary so that save() does not
-                // see an existing file at config_path and overwrite the
-                // (good) .bak with corrupted content.
+            if config_was_corrupted {
+                // Rename the corrupted primary away *before* calling save().
+                // save() copies config_path → config_path.bak before the
+                // atomic replace, so if the corrupted file is still at
+                // config_path it would overwrite the good .bak that we just
+                // used for recovery. Only call save() when the rename
+                // succeeds; on failure log and leave recovery for next boot
+                // rather than destroying the good backup.
                 let corrupted_path = config_path.with_extension("toml.corrupted");
-                let _ = fs::rename(&config_path, &corrupted_path).await;
-
-                if let Err(e) = config.save().await {
-                    tracing::warn!(
-                        path = %config.config_path.display(),
-                        error = %e,
-                        "[config] Failed to persist recovered config to disk"
-                    );
+                match fs::rename(&config_path, &corrupted_path).await {
+                    Ok(()) => {
+                        tracing::debug!(
+                            src = %config_path.display(),
+                            dst = %corrupted_path.display(),
+                            "[config] Renamed corrupted config; persisting recovered config"
+                        );
+                        if let Err(e) = config.save().await {
+                            tracing::warn!(
+                                path = %config.config_path.display(),
+                                error = %e,
+                                "[config] Failed to persist recovered config to disk"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            src = %config_path.display(),
+                            dst = %corrupted_path.display(),
+                            error = %e,
+                            "[config] Failed to rename corrupted config; skipping save to \
+                             protect the .bak — will retry recovery on next startup"
+                        );
+                    }
                 }
             }
 
@@ -635,6 +655,7 @@ impl Config {
                 workspace = %config.workspace_dir.display(),
                 source = resolution_source.as_str(),
                 initialized = false,
+                recovered = config_was_corrupted,
                 "Config loaded"
             );
             Ok(config)
@@ -688,6 +709,8 @@ impl Config {
             return Ok(config);
         }
 
+        // NOTE: no backup recovery here by design — this is the debug-dump path only;
+        // `load_or_init()` is the authoritative startup path that handles corruption.
         let raw = fs::read_to_string(&config_path)
             .await
             .context("reading config.toml from default paths")?;
@@ -1334,7 +1357,9 @@ impl Config {
             .context("Failed to fsync temporary config file")?;
         drop(temp_file);
 
-        let had_existing_config = self.config_path.exists();
+        let had_existing_config = tokio::fs::try_exists(&self.config_path)
+            .await
+            .unwrap_or(false);
         if had_existing_config {
             fs::copy(&self.config_path, &backup_path)
                 .await

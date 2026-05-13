@@ -37,7 +37,9 @@ impl Default for StorageProviderConfig {
 #[allow(clippy::struct_excessive_bools)]
 #[serde(default)]
 pub struct MemoryConfig {
+    #[serde(default = "default_memory_backend")]
     pub backend: String,
+    #[serde(default = "default_true")]
     pub auto_save: bool,
     #[serde(default = "default_embedding_provider")]
     pub embedding_provider: String,
@@ -49,6 +51,14 @@ pub struct MemoryConfig {
     pub min_relevance_score: f64,
     #[serde(default)]
     pub sqlite_open_timeout_secs: Option<u64>,
+}
+
+fn default_memory_backend() -> String {
+    "sqlite".into()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_embedding_provider() -> String {
@@ -74,8 +84,8 @@ fn default_min_relevance_score() -> f64 {
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
-            backend: "sqlite".into(),
-            auto_save: true,
+            backend: default_memory_backend(),
+            auto_save: default_true(),
             embedding_provider: default_embedding_provider(),
             embedding_model: default_embedding_model(),
             embedding_dimensions: default_embedding_dims(),
