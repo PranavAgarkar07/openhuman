@@ -147,22 +147,36 @@ fn classify_inference_error(err: &str) -> (&'static str, &'static str) {
             "auth_error",
             "There's an authentication issue with the AI provider. Please check your API key in settings.",
         )
-    } else if lower.contains("402") || lower.contains("payment required") || lower.contains("insufficient balance") {
+    } else if lower.contains("402")
+        || lower.contains("payment required")
+        || lower.contains("insufficient balance")
+    {
         (
             "budget_exhausted",
             "Insufficient credits. Please top up to continue.",
         )
-    } else if lower.contains("500") || lower.contains("internal server") || lower.contains("service unavailable") || lower.contains("503") {
+    } else if lower.contains("500")
+        || lower.contains("internal server")
+        || lower.contains("service unavailable")
+        || lower.contains("503")
+    {
         (
             "provider_error",
             "The AI provider is temporarily unavailable. Please try again later.",
         )
-    } else if lower.contains("context") && (lower.contains("length") || lower.contains("limit") || lower.contains("exceed") || lower.contains("token")) {
+    } else if lower.contains("context")
+        && (lower.contains("length")
+            || lower.contains("limit")
+            || lower.contains("exceed")
+            || lower.contains("token"))
+    {
         (
             "context_overflow",
             "The conversation is too long. Please start a new chat.",
         )
-    } else if lower.contains("model") && (lower.contains("not found") || lower.contains("unavailable")) {
+    } else if lower.contains("model")
+        && (lower.contains("not found") || lower.contains("unavailable"))
+    {
         (
             "model_unavailable",
             "The selected model is not available. Please check your model settings.",
