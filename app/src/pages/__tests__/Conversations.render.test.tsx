@@ -670,4 +670,69 @@ describe('Conversations — smoke render (#1123 welcome-lock removal)', () => {
       model: 'reasoning-v1',
     });
   });
+
+  describe('IME composition guard (#1718)', () => {
+    it('does not send when Enter is pressed during IME composition', async () => {
+      const { textarea } = await renderSelectedConversation();
+      vi.mocked(chatSend).mockClear();
+
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '你好' } });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, {
+          key: 'Enter',
+          keyCode: 229,
+          code: 'Enter',
+          which: 229,
+          bubbles: true,
+          cancelable: true,
+        });
+      });
+
+      expect(chatSend).not.toHaveBeenCalled();
+
+      // Press Enter normally — should send.
+      await act(async () => {
+        fireEvent.keyDown(textarea, {
+          key: 'Enter',
+          keyCode: 13,
+          code: 'Enter',
+          which: 13,
+          bubbles: true,
+          cancelable: true,
+        });
+      });
+
+      await waitFor(() => {
+        expect(chatSend).toHaveBeenCalled();
+      });
+    });
+
+    it('sends normally when Enter is pressed without IME composition', async () => {
+      const { textarea } = await renderSelectedConversation();
+      vi.mocked(chatSend).mockClear();
+      vi.mocked(threadApi.appendMessage).mockClear();
+
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'hello' } });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, {
+          key: 'Enter',
+          keyCode: 13,
+          code: 'Enter',
+          which: 13,
+          bubbles: true,
+          cancelable: true,
+        });
+      });
+
+      await waitFor(() => {
+        expect(chatSend).toHaveBeenCalled();
+      });
+    });
+  });
 });

@@ -855,6 +855,9 @@ const Conversations = ({ variant = 'page', composer = 'text' }: ConversationsPro
     }
 
     if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) {
+        return;
+      }
       e.preventDefault();
       void handleSendMessage();
     }
