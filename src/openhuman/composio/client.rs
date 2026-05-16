@@ -527,16 +527,13 @@ fn normalize_calendar_query_args(tool: &str, arguments: &mut serde_json::Value) 
         if let Some(serde_json::Value::String(val)) = map.get(*key).cloned() {
             if is_bare_date(&val) {
                 let normalized = format!("{}T00:00:00Z", val);
-                map.insert(
-                    (*key).to_string(),
-                    serde_json::Value::String(normalized.clone()),
-                );
                 tracing::debug!(
                     tool = %tool,
                     key = %key,
                     normalized = %normalized,
                     "[composio] normalized bare date to RFC 3339 for calendar query"
                 );
+                map.insert((*key).to_string(), serde_json::Value::String(normalized));
             }
         }
     }

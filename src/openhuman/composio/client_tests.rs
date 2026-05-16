@@ -929,6 +929,29 @@ fn normalize_calendar_query_args_handles_calendar_find_event_slug() {
     assert_eq!(args["timeMin"], "2026-06-01T00:00:00Z");
 }
 
+#[test]
+fn normalize_calendar_query_args_normalizes_one_side_when_other_absent() {
+    // Asymmetric: only timeMin present, timeMax missing. The normalizer
+    // must convert timeMin without inserting a synthetic timeMax.
+    let mut args = serde_json::json!({ "timeMin": "2026-05-14" });
+    normalize_calendar_query_args("GOOGLECALENDAR_EVENTS_LIST", &mut args);
+    assert_eq!(args["timeMin"], "2026-05-14T00:00:00Z");
+    assert!(args.get("timeMax").is_none());
+}
+
+#[test]
+fn normalize_calendar_query_args_skips_non_string_values() {
+    // Non-string values (numbers, bools, nulls, objects) must be left
+    // untouched — the normalizer only rewrites string bare-date inputs.
+    let mut args = serde_json::json!({
+        "timeMin": 42,
+        "timeMax": null,
+    });
+    normalize_calendar_query_args("GOOGLECALENDAR_EVENTS_LIST", &mut args);
+    assert_eq!(args["timeMin"], 42);
+    assert!(args["timeMax"].is_null());
+}
+
 // ── Factory tests (`create_composio_client`) ────────────────────────
 //
 // Mirror the four branches the spec demands:
